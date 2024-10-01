@@ -927,6 +927,13 @@ func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*G
 
 	// add poststarthooks that were preconfigured.  Using the add method will give us an error if the same name has already been registered.
 	for name, preconfiguredPostStartHook := range c.PostStartHooks {
+		// temporary hack to prevent repeated registration of the admission initializer hook
+		// a proper fix would require moving the hook to the configuration
+		if name == "start-apiserver-admission-initializer" {
+			if s.isPostStartHookRegistered("start-apiserver-admission-initializer") {
+				continue
+			}
+		}
 		if err := s.AddPostStartHook(name, preconfiguredPostStartHook.hook); err != nil {
 			return nil, err
 		}
