@@ -124,6 +124,9 @@ type Options struct {
 
 	// now is used for testing. It defaults to time.Now.
 	now func() time.Time
+
+	ClaimsExpanders                      []ClaimsExpander
+	UnknownCELValueTypesToStringListFunc UnknownCELValueTypesToStringListFunc
 }
 
 // Subset of dynamiccertificates.CAContentProvider that can be used to dynamically load root CAs.
@@ -214,6 +217,9 @@ type jwtAuthenticator struct {
 	requiredClaims map[string]string
 
 	healthCheck atomic.Pointer[errorHolder]
+
+	claimsExpanders                      []ClaimsExpander
+	unknownCELValueTypesToStringListFunc UnknownCELValueTypesToStringListFunc
 }
 
 // idTokenVerifier is a wrapper around oidc.IDTokenVerifier. It uses the oidc.IDTokenVerifier
@@ -405,6 +411,7 @@ func New(lifecycleCtx context.Context, opts Options) (AuthenticatorTokenWithHeal
 	authn := &jwtAuthenticator{
 		jwtAuthenticator: opts.JWTAuthenticator,
 		resolver:         resolver,
+		claimsExpanders:  opts.ClaimsExpanders,
 		celMapper:        celMapper,
 		requiredClaims:   requiredClaims,
 	}
@@ -882,6 +889,10 @@ func (a *jwtAuthenticator) AuthenticateToken(ctx context.Context, token string) 
 		}
 	}
 
+	if err := doClaimsExpansion(ctx, token, c, a.claimsExpanders...); err != nil {
+		return nil, false, fmt.Errorf("oidc: could not expand additional claims: %v", err)
+	}
+
 	var claimsValue *lazy.MapValue
 	// Convert the claims to traits.Mapper so that we can evaluate the CEL expressions
 	// against the claims. This is done once here so that we don't have to convert
@@ -1060,7 +1071,7 @@ func (a *jwtAuthenticator) getGroups(ctx context.Context, c claims, claimsValue 
 		return nil, fmt.Errorf("oidc: error evaluating group claim expression: %w", err)
 	}
 
-	groups, err := convertCELValueToStringList(evalResult.EvalResult)
+	groups, err := convertCELValueToStringList(evalResult.EvalResult, a.unknownCELValueTypesToStringListFunc)
 	if err != nil {
 		return nil, fmt.Errorf("oidc: error evaluating group claim expression: %w", err)
 	}
@@ -1113,7 +1124,7 @@ func (a *jwtAuthenticator) getExtra(ctx context.Context, c claims, claimsValue *
 			return nil, fmt.Errorf("oidc: error evaluating extra claim expression: %w", fmt.Errorf("invalid type conversion, expected ExtraMappingCondition"))
 		}
 
-		extraValues, err := convertCELValueToStringList(result.EvalResult)
+		extraValues, err := convertCELValueToStringList(result.EvalResult, a.unknownCELValueTypesToStringListFunc)
 		if err != nil {
 			return nil, fmt.Errorf("oidc: error evaluating extra claim expression: %s: %w", extraMapping.Expression, err)
 		}
@@ -1223,7 +1234,7 @@ func newClaimsValue(c claims) *lazy.MapValue {
 // The CEL value needs to be either a string or a list of strings.
 // "", [] are treated as not being present and will return nil.
 // Empty string in a list of strings is treated as not being present and will be filtered out.
-func convertCELValueToStringList(val ref.Val) ([]string, error) {
+func convertCELValueToStringList(val ref.Val, unknownHandler UnknownCELValueTypesToStringListFunc) ([]string, error) {
 	switch val.Type().TypeName() {
 	case celgo.StringType.TypeName():
 		out := val.Value().(string)
@@ -1269,6 +1280,17 @@ func convertCELValueToStringList(val ref.Val) ([]string, error) {
 	case celgo.NullType.TypeName():
 		return nil, nil
 	default:
+		if unknownHandler != nil {
+			out, ok, err := unknownHandler(val.Value())
+			if ok {
+				if err != nil {
+					return nil, err
+				}
+
+				return out, nil
+			}
+		}
+
 		return nil, fmt.Errorf("expression must return a string or a list of strings")
 	}
 }
