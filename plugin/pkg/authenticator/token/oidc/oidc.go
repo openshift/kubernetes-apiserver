@@ -412,6 +412,7 @@ func New(lifecycleCtx context.Context, opts Options) (AuthenticatorTokenWithHeal
 		jwtAuthenticator: opts.JWTAuthenticator,
 		resolver:         resolver,
 		claimsExpanders:  opts.ClaimsExpanders,
+		unknownCELValueTypesToStringListFunc: opts.UnknownCELValueTypesToStringListFunc,
 		celMapper:        celMapper,
 		requiredClaims:   requiredClaims,
 	}
@@ -1269,6 +1270,17 @@ func convertCELValueToStringList(val ref.Val, unknownHandler UnknownCELValueType
 				result = append(result, out)
 			}
 		default:
+			if unknownHandler != nil {
+				out, ok, err := unknownHandler(val.Value())
+				if ok {
+					if err != nil {
+						return nil, err
+					}
+
+					return out, nil
+				}
+			}
+
 			return nil, fmt.Errorf("expression must return a string or a list of strings")
 		}
 
